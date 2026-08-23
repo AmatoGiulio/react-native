@@ -14,12 +14,13 @@ cd "$ROOT"
 APP_ID="com.facebook.react.uiapp"
 ACTIVITY="$APP_ID/.RNTesterActivity"
 DEEPLINK="rntester://example/AnimationBackend/presentation-geometry"
-METRO_PORT=8099
+PROTOCOL="PG_CONTINUOUS_V3"
 STOCK_REF="origin/research/presentation-geometry-stock"
 PATCHED_REF="origin/research/presentation-geometry-proof"
-RESULT_TIMEOUT_SECONDS=210
+RESULT_SETTLE_SECONDS=21
+RESULT_TIMEOUT_SECONDS=45
 
-for tool in git adb yarn curl python3; do
+for tool in git adb yarn curl python3 pkill; do
   command -v "$tool" >/dev/null 2>&1 || {
     echo "Missing required tool: $tool" >&2
     exit 1
@@ -57,46 +58,61 @@ restore_checkout() {
   fi
 }
 
+stop_metro() {
+  if [[ -n "$METRO_PID" ]]; then
+    pkill -TERM -P "$METRO_PID" >/dev/null 2>&1 || true
+    kill "$METRO_PID" >/dev/null 2>&1 || true
+    wait "$METRO_PID" >/dev/null 2>&1 || true
+    METRO_PID=""
+  fi
+}
+
 cleanup() {
   if [[ -n "$LOGCAT_PID" ]] && kill -0 "$LOGCAT_PID" >/dev/null 2>&1; then
     kill "$LOGCAT_PID" >/dev/null 2>&1 || true
   fi
-  if [[ -n "$METRO_PID" ]] && kill -0 "$METRO_PID" >/dev/null 2>&1; then
-    kill "$METRO_PID" >/dev/null 2>&1 || true
-  fi
+  stop_metro
   restore_checkout
 }
 trap cleanup EXIT INT TERM
 
-echo "Fetching A/B refs..."
-git fetch origin
+free_port() {
+  python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(('127.0.0.1', 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
 
-echo "Starting isolated Metro on :$METRO_PORT..."
-(
-  cd packages/rn-tester
-  yarn start --port "$METRO_PORT"
-) >"$RESULT_DIR/metro.log" 2>&1 &
-METRO_PID=$!
+start_metro() {
+  local label="$1"
+  local port="$2"
+  local metro_log="$RESULT_DIR/${label}-metro.log"
 
-metro_ready=0
-for _ in $(seq 1 90); do
-  if curl -fsS "http://127.0.0.1:$METRO_PORT/status" 2>/dev/null | grep -q "packager-status:running"; then
-    metro_ready=1
-    break
-  fi
-  if ! kill -0 "$METRO_PID" >/dev/null 2>&1; then
-    echo "Metro exited before becoming ready. See $RESULT_DIR/metro.log" >&2
-    exit 1
-  fi
-  sleep 1
-done
+  echo "Starting fresh Metro for $label on :$port (--reset-cache)..."
+  (
+    cd packages/rn-tester
+    exec yarn start --port "$port" --reset-cache
+  ) >"$metro_log" 2>&1 &
+  METRO_PID=$!
 
-if [[ "$metro_ready" != "1" ]]; then
-  echo "Metro did not become ready on port $METRO_PORT. See $RESULT_DIR/metro.log" >&2
-  exit 1
-fi
+  for _ in $(seq 1 90); do
+    if ! kill -0 "$METRO_PID" >/dev/null 2>&1; then
+      echo "Metro for $label exited before becoming ready. See $metro_log" >&2
+      tail -n 80 "$metro_log" >&2 || true
+      return 1
+    fi
+    if curl -fsS "http://127.0.0.1:$port/status" 2>/dev/null | grep -q "packager-status:running"; then
+      return 0
+    fi
+    sleep 1
+  done
 
-adb reverse "tcp:$METRO_PORT" "tcp:$METRO_PORT" >/dev/null
+  echo "Metro for $label did not become ready. See $metro_log" >&2
+  return 1
+}
 
 find_and_tap_matrix_button() {
   local label="$1"
@@ -120,7 +136,7 @@ except Exception:
 
 for node in root.iter('node'):
     text = node.attrib.get('text', '')
-    if 'START CONTINUOUS MATRIX' not in text:
+    if 'START CONTINUOUS V3' not in text:
         continue
     bounds = node.attrib.get('bounds', '')
     match = re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
@@ -139,7 +155,7 @@ PY
     sleep 1
   done
 
-  echo "Could not find START CONTINUOUS MATRIX for $label." >&2
+  echo "Could not find START CONTINUOUS V3 for $label." >&2
   return 1
 }
 
@@ -151,17 +167,21 @@ wait_for_matrix_result() {
   local elapsed=0
   local parsed=""
 
+  # The V3 matrix takes ~18.6 seconds. Do not run UIAutomator while sampling;
+  # it can perturb the UI thread and measurement latency.
+  sleep "$RESULT_SETTLE_SECONDS"
+
   while (( elapsed < RESULT_TIMEOUT_SECONDS )); do
     adb shell uiautomator dump /sdcard/pg-result.xml >/dev/null 2>&1 || true
     adb shell cat /sdcard/pg-result.xml >"$ui_xml" 2>/dev/null || true
 
-    parsed="$(python3 - "$ui_xml" <<'PY'
+    parsed="$(python3 - "$ui_xml" "$PROTOCOL" <<'PY'
 import json
 import re
 import sys
 import xml.etree.ElementTree as ET
 
-path = sys.argv[1]
+path, protocol = sys.argv[1:]
 try:
     root = ET.parse(path).getroot()
 except Exception:
@@ -169,48 +189,33 @@ except Exception:
 
 texts = [node.attrib.get('text', '') for node in root.iter('node')]
 text = '\n'.join(part for part in texts if part)
-if 'Presentation geometry matrix' not in text:
+if f'protocol: {protocol}' not in text:
     sys.exit(0)
 
+number = r'-?[0-9]+(?:\.[0-9]+)?'
 runs = re.findall(
-    r'run\s+(\d+):\s+span=([0-9.]+)\s+freeze=(\d+)\s+max=(\d+)ms\s+duration=(\d+)ms',
+    rf'run\s+(\d+):\s+samples=(\d+)\s+observed=({number})\s+'
+    rf'expected=({number})\s+ratio=({number})\s+mae=({number})\s+'
+    rf'maxErr=({number})\s+duration=(\d+)ms',
     text,
 )
 if len(runs) != 3:
     sys.exit(0)
 
-samples_match = re.search(r'samples/run:\s*(\d+)', text)
-total_match = re.search(r'total freeze episodes:\s*(\d+)', text)
-max_match = re.search(r'matrix max freeze:\s*(\d+)ms', text)
-press_in_match = re.search(r'onPressIn:\s*(\d+)', text)
-press_match = re.search(r'onPress:\s*(\d+)', text)
-press_gap_match = re.search(r'press gap:\s*(-?\d+)', text)
-if not all((samples_match, total_match, max_match, press_in_match, press_match, press_gap_match)):
-    sys.exit(0)
-
-samples = int(samples_match.group(1))
-run_data = [
-    {
+run_data = []
+for run, samples, observed, expected, ratio, mae, max_err, duration in runs:
+    run_data.append({
         'run': int(run),
-        'span': float(span),
-        'samples': samples,
-        'freezeEpisodes': int(freeze),
-        'maxFreezeMs': int(max_freeze),
+        'samples': int(samples),
+        'observedDelta': float(observed),
+        'expectedDelta': float(expected),
+        'trackingRatio': float(ratio),
+        'meanAbsError': float(mae),
+        'maxAbsError': float(max_err),
         'durationMs': int(duration),
-    }
-    for run, span, freeze, max_freeze, duration in runs
-]
+    })
 
-print(json.dumps({
-    'sampleIntervalMs': 50,
-    'samplesPerRun': samples,
-    'runs': run_data,
-    'totalFreezeEpisodes': int(total_match.group(1)),
-    'maxFreezeMs': int(max_match.group(1)),
-    'onPressIn': int(press_in_match.group(1)),
-    'onPress': int(press_match.group(1)),
-    'pressGap': int(press_gap_match.group(1)),
-}))
+print(json.dumps({'protocol': protocol, 'runs': run_data}))
 PY
 )"
 
@@ -221,16 +226,16 @@ PY
     fi
 
     if ! adb shell pidof "$APP_ID" >/dev/null 2>&1; then
-      echo "$label app process exited before producing a result." >&2
+      echo "$label app process exited before producing a $PROTOCOL result." >&2
       tail -n 120 "$log_file" >&2 || true
       return 1
     fi
 
-    sleep 2
-    elapsed=$((elapsed + 2))
+    sleep 1
+    elapsed=$((elapsed + 1))
   done
 
-  echo "Timed out waiting for $label matrix result after ${RESULT_TIMEOUT_SECONDS}s." >&2
+  echo "Timed out waiting for $label $PROTOCOL result." >&2
   tail -n 120 "$log_file" >&2 || true
   return 1
 }
@@ -238,12 +243,15 @@ PY
 run_variant() {
   local label="$1"
   local ref="$2"
+  local port
   local log_file="$RESULT_DIR/${label}-logcat.txt"
 
   echo
   echo "=== $label ==="
   echo "Checking out $ref"
   git switch --detach "$ref" >/dev/null
+
+  port="$(free_port)"
 
   adb uninstall "$APP_ID" >/dev/null 2>&1 || true
   adb shell pm trim-caches 1G >/dev/null 2>&1 || true
@@ -252,12 +260,13 @@ run_variant() {
   ./gradlew \
     :packages:rn-tester:android:app:installDebug \
     -PreactNativeArchitectures=arm64-v8a \
-    -PreactNativeDevServerPort="$METRO_PORT"
+    -PreactNativeDevServerPort="$port"
 
-  adb reverse "tcp:$METRO_PORT" "tcp:$METRO_PORT" >/dev/null
+  start_metro "$label" "$port"
+  adb reverse "tcp:$port" "tcp:$port" >/dev/null
+
   adb shell am force-stop "$APP_ID" >/dev/null 2>&1 || true
   adb logcat -c
-
   adb logcat -v raw >"$log_file" 2>&1 &
   LOGCAT_PID=$!
 
@@ -268,16 +277,20 @@ run_variant() {
     -n "$ACTIVITY" >/dev/null
 
   find_and_tap_matrix_button "$label"
-  echo "Matrix running; waiting for continuous sweep result..."
+  echo "Running $PROTOCOL: 3 x 6s time-bounded sweeps..."
   wait_for_matrix_result "$label" "$log_file" >/dev/null
 
   if [[ -n "$LOGCAT_PID" ]] && kill -0 "$LOGCAT_PID" >/dev/null 2>&1; then
     kill "$LOGCAT_PID" >/dev/null 2>&1 || true
   fi
   LOGCAT_PID=""
+  stop_metro
 
-  echo "$label result captured."
+  echo "$label $PROTOCOL result captured."
 }
+
+echo "Fetching A/B refs..."
+git fetch origin
 
 run_variant "stock" "$STOCK_REF"
 run_variant "patched" "$PATCHED_REF"
@@ -285,6 +298,7 @@ run_variant "patched" "$PATCHED_REF"
 COMBINED_JSON="$RESULT_DIR/ab-result.json"
 python3 - "$RESULT_DIR/stock.json" "$RESULT_DIR/patched.json" "$COMBINED_JSON" <<'PY'
 import json
+import statistics
 import sys
 
 stock_path, patched_path, out_path = sys.argv[1:]
@@ -294,29 +308,52 @@ with open(patched_path) as f:
     patched = json.load(f)
 
 
-def print_variant(name, data):
-    freezes = [run['freezeEpisodes'] for run in data['runs']]
-    spans = [round(run['span'], 1) for run in data['runs']]
+def mean(values):
+    return statistics.mean(values) if values else 0.0
+
+
+def summarize(name, data):
+    ratios = [r['trackingRatio'] for r in data['runs']]
+    maes = [r['meanAbsError'] for r in data['runs']]
+    observed = [r['observedDelta'] for r in data['runs']]
+    expected = [r['expectedDelta'] for r in data['runs']]
+    samples = [r['samples'] for r in data['runs']]
+    durations = [r['durationMs'] for r in data['runs']]
     print(
-        f"{name:7} freezes/run={freezes} total={data['totalFreezeEpisodes']} "
-        f"max={data['maxFreezeMs']}ms spans={spans}"
+        f"{name:7} ratio={[round(v, 3) for v in ratios]} "
+        f"MAE={[round(v, 1) for v in maes]} "
+        f"observed={[round(v, 1) for v in observed]} "
+        f"expected={[round(v, 1) for v in expected]} "
+        f"samples={samples} duration={durations}"
     )
+    return mean(ratios), mean(maes)
 
-print('\n=== PRESENTATION GEOMETRY A/B ===')
-print_variant('STOCK', stock)
-print_variant('PATCHED', patched)
+print('\n=== PRESENTATION GEOMETRY A/B V3 ===')
+stock_ratio, stock_mae = summarize('STOCK', stock)
+patched_ratio, patched_mae = summarize('PATCHED', patched)
 
-if stock['totalFreezeEpisodes'] > 0 and patched['totalFreezeEpisodes'] == 0:
-    verdict = 'PASS: stock freezes, patched has zero freeze episodes'
-elif patched['totalFreezeEpisodes'] < stock['totalFreezeEpisodes']:
-    verdict = 'IMPROVED: patched has fewer freeze episodes than stock'
+patched_tracks = 0.85 <= patched_ratio <= 1.15
+stock_does_not = stock_ratio < 0.6 or stock_ratio > 1.4
+if patched_tracks and stock_does_not and patched_mae + 10 < stock_mae:
+    verdict = 'PASS: patched tracks the native presentation sweep; stock does not'
+elif patched_mae < stock_mae * 0.5:
+    verdict = 'IMPROVED: patched materially reduces presentation tracking error'
 else:
-    verdict = 'INCONCLUSIVE: patched did not reduce freeze episodes'
+    verdict = 'INCONCLUSIVE: V3 did not show a material tracking improvement'
 
 print(f'VERDICT: {verdict}')
 
 with open(out_path, 'w') as f:
-    json.dump({'stock': stock, 'patched': patched, 'verdict': verdict}, f, indent=2)
+    json.dump({
+        'protocol': 'PG_CONTINUOUS_V3',
+        'stock': stock,
+        'patched': patched,
+        'stockMeanRatio': stock_ratio,
+        'patchedMeanRatio': patched_ratio,
+        'stockMeanAbsError': stock_mae,
+        'patchedMeanAbsError': patched_mae,
+        'verdict': verdict,
+    }, f, indent=2)
 PY
 
 echo

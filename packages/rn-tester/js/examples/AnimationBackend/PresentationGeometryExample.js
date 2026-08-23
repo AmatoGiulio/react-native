@@ -14,11 +14,17 @@ import * as React from 'react';
 import {
   Alert,
   Animated,
+  Easing,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+
+const SAMPLE_INTERVAL_MS = 50;
+const FREEZE_EPSILON_PX = 0.25;
+const FREEZE_THRESHOLD_MS = 120;
+const WARMUP_MS = 600;
 
 function PresentationGeometryExample(): React.Node {
   const translateY = React.useRef(new Animated.Value(0)).current;
@@ -31,6 +37,15 @@ function PresentationGeometryExample(): React.Node {
   const maxPageYRef = React.useRef<number>(Number.NEGATIVE_INFINITY);
   const pressInCountRef = React.useRef(0);
   const pressCountRef = React.useRef(0);
+  const sampleCountRef = React.useRef(0);
+  const lastMeasuredPageYRef = React.useRef<?number>(null);
+  const lastSampleAtRef = React.useRef<?number>(null);
+  const stableRunStartedAtRef = React.useRef<?number>(null);
+  const freezeEpisodeActiveRef = React.useRef(false);
+  const freezeEpisodeCountRef = React.useRef(0);
+  const maxFreezeMsRef = React.useRef(0);
+  const mountedAtRef = React.useRef(Date.now());
+  const measurementPendingRef = React.useRef(false);
 
   React.useEffect(() => {
     const animation = Animated.loop(
@@ -38,11 +53,13 @@ function PresentationGeometryExample(): React.Node {
         Animated.timing(translateY, {
           toValue: 220,
           duration: 1400,
+          easing: Easing.linear,
           useNativeDriver: true,
         }),
         Animated.timing(translateY, {
           toValue: 0,
           duration: 1400,
+          easing: Easing.linear,
           useNativeDriver: true,
         }),
       ]),
@@ -53,10 +70,21 @@ function PresentationGeometryExample(): React.Node {
 
   React.useEffect(() => {
     const interval = setInterval(() => {
-      rootRef.current?.measure(
+      const root = rootRef.current;
+      const measuredView = measuredViewRef.current;
+      if (measurementPendingRef.current || root == null || measuredView == null) {
+        return;
+      }
+
+      measurementPendingRef.current = true;
+      root.measure(
         (_rootX, _rootY, _rootWidth, _rootHeight, _rootPageX, rootPageY) => {
-          measuredViewRef.current?.measure(
+          measuredView.measure(
             (_x, _y, _width, _height, _pageX, measuredPageY) => {
+              measurementPendingRef.current = false;
+              const now = Date.now();
+              sampleCountRef.current += 1;
+
               minPageYRef.current = Math.min(
                 minPageYRef.current,
                 measuredPageY,
@@ -66,12 +94,50 @@ function PresentationGeometryExample(): React.Node {
                 measuredPageY,
               );
               measuredMarkerY.setValue(measuredPageY - rootPageY);
-              console.log(`[PG] measured pageY=${measuredPageY.toFixed(1)}`);
+
+              const previousPageY = lastMeasuredPageYRef.current;
+              const previousSampleAt = lastSampleAtRef.current;
+              const isPastWarmup = now - mountedAtRef.current >= WARMUP_MS;
+
+              if (
+                isPastWarmup &&
+                previousPageY != null &&
+                previousSampleAt != null &&
+                Math.abs(measuredPageY - previousPageY) <= FREEZE_EPSILON_PX
+              ) {
+                if (stableRunStartedAtRef.current == null) {
+                  stableRunStartedAtRef.current = previousSampleAt;
+                }
+
+                const freezeMs = now - stableRunStartedAtRef.current;
+                maxFreezeMsRef.current = Math.max(
+                  maxFreezeMsRef.current,
+                  freezeMs,
+                );
+
+                if (
+                  freezeMs >= FREEZE_THRESHOLD_MS &&
+                  !freezeEpisodeActiveRef.current
+                ) {
+                  freezeEpisodeActiveRef.current = true;
+                  freezeEpisodeCountRef.current += 1;
+                  console.log(
+                    `[PG] freeze episode #${freezeEpisodeCountRef.current} ` +
+                      `${freezeMs}ms at pageY=${measuredPageY.toFixed(1)}`,
+                  );
+                }
+              } else {
+                stableRunStartedAtRef.current = null;
+                freezeEpisodeActiveRef.current = false;
+              }
+
+              lastMeasuredPageYRef.current = measuredPageY;
+              lastSampleAtRef.current = now;
             },
           );
         },
       );
-    }, 100);
+    }, SAMPLE_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [measuredMarkerY]);
 
@@ -81,14 +147,19 @@ function PresentationGeometryExample(): React.Node {
     const hasMeasurements =
       Number.isFinite(minPageY) && Number.isFinite(maxPageY);
     const range = hasMeasurements ? maxPageY - minPageY : 0;
+    const pressGap = pressInCountRef.current - pressCountRef.current;
 
     Alert.alert(
       'Presentation geometry results',
       `pageY min: ${hasMeasurements ? minPageY.toFixed(1) : '—'}\n` +
         `pageY max: ${hasMeasurements ? maxPageY.toFixed(1) : '—'}\n` +
         `pageY span: ${hasMeasurements ? range.toFixed(1) : '—'}\n` +
+        `samples: ${sampleCountRef.current}\n` +
+        `freeze episodes (>=${FREEZE_THRESHOLD_MS}ms): ${freezeEpisodeCountRef.current}\n` +
+        `max freeze: ${maxFreezeMsRef.current}ms\n` +
         `onPressIn: ${pressInCountRef.current}\n` +
-        `onPress: ${pressCountRef.current}`,
+        `onPress: ${pressCountRef.current}\n` +
+        `press gap: ${pressGap}`,
     );
   }, []);
 
@@ -114,11 +185,9 @@ function PresentationGeometryExample(): React.Node {
         <Pressable
           onPressIn={() => {
             pressInCountRef.current += 1;
-            console.log(`[PG] onPressIn=${pressInCountRef.current}`);
           }}
           onPress={() => {
             pressCountRef.current += 1;
-            console.log(`[PG] onPress=${pressCountRef.current}`);
           }}
           style={styles.button}>
           <View ref={measuredViewRef} collapsable={false}>

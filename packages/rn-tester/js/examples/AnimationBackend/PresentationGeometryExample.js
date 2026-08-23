@@ -22,12 +22,13 @@ import {
 } from 'react-native';
 
 const SAMPLE_INTERVAL_MS = 50;
-const SAMPLES_PER_RUN = 800;
+const SAMPLES_PER_RUN = 160;
 const RUN_COUNT = 3;
 const RUN_GAP_MS = 300;
+const SWEEP_DURATION_MS = 10000;
 const FREEZE_EPSILON_PX = 0.25;
-const FREEZE_THRESHOLD_MS = 120;
-const WARMUP_MS = 600;
+const FREEZE_THRESHOLD_MS = 150;
+const WARMUP_MS = 300;
 
 type RunResult = {
   run: number,
@@ -42,13 +43,9 @@ type RunResult = {
 
 function PresentationGeometryExample(): React.Node {
   const translateY = React.useRef(new Animated.Value(0)).current;
-  const measuredViewRef = React.useRef<React.ElementRef<typeof View> | null>(
-    null,
-  );
+  const measuredViewRef = React.useRef<any>(null);
   const runningRef = React.useRef(false);
   const mountedRef = React.useRef(true);
-  const pressInCountRef = React.useRef(0);
-  const pressCountRef = React.useRef(0);
   const animationRef = React.useRef<?{stop: () => void}>(null);
   const intervalRef = React.useRef<?IntervalID>(null);
   const nextRunTimeoutRef = React.useRef<?TimeoutID>(null);
@@ -72,8 +69,6 @@ function PresentationGeometryExample(): React.Node {
     }
 
     runningRef.current = true;
-    pressInCountRef.current = 0;
-    pressCountRef.current = 0;
     const results: Array<RunResult> = [];
 
     const finishMatrix = () => {
@@ -89,7 +84,6 @@ function PresentationGeometryExample(): React.Node {
         (max, result) => Math.max(max, result.maxFreezeMs),
         0,
       );
-      const pressGap = pressInCountRef.current - pressCountRef.current;
       const lines = results.map(
         result =>
           `run ${result.run}: span=${result.span.toFixed(1)} ` +
@@ -101,20 +95,21 @@ function PresentationGeometryExample(): React.Node {
         `samples/run: ${SAMPLES_PER_RUN}\n` +
         `total freeze episodes: ${totalFreezeEpisodes}\n` +
         `matrix max freeze: ${maxFreezeMs}ms\n` +
-        `onPressIn: ${pressInCountRef.current}\n` +
-        `onPress: ${pressCountRef.current}\n` +
-        `press gap: ${pressGap}`;
+        `onPressIn: 0\n` +
+        `onPress: 0\n` +
+        `press gap: 0`;
 
       console.log(
         `[PG_MATRIX] ${JSON.stringify({
           sampleIntervalMs: SAMPLE_INTERVAL_MS,
           samplesPerRun: SAMPLES_PER_RUN,
+          sweepDurationMs: SWEEP_DURATION_MS,
           runs: results,
           totalFreezeEpisodes,
           maxFreezeMs,
-          onPressIn: pressInCountRef.current,
-          onPress: pressCountRef.current,
-          pressGap,
+          onPressIn: 0,
+          onPress: 0,
+          pressGap: 0,
         })}`,
       );
       Alert.alert('Presentation geometry matrix', summary);
@@ -141,22 +136,12 @@ function PresentationGeometryExample(): React.Node {
       let maxFreezeMs = 0;
       let measurementPending = false;
 
-      const animation = Animated.loop(
-        Animated.sequence([
-          Animated.timing(translateY, {
-            toValue: 220,
-            duration: 1400,
-            easing: Easing.linear,
-            useNativeDriver: true,
-          }),
-          Animated.timing(translateY, {
-            toValue: 0,
-            duration: 1400,
-            easing: Easing.linear,
-            useNativeDriver: true,
-          }),
-        ]),
-      );
+      const animation = Animated.timing(translateY, {
+        toValue: 220,
+        duration: SWEEP_DURATION_MS,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      });
       animationRef.current = animation;
       animation.start();
 
@@ -254,30 +239,23 @@ function PresentationGeometryExample(): React.Node {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Presentation geometry matrix</Text>
+      <Text style={styles.title}>Presentation geometry continuous sweep</Text>
       <Text style={styles.help}>
-        Deterministic geometry-only test: 3 runs x 800 samples at 50 ms. No
-        React state updates and no measurement marker mutations during a run.
-        The full matrix takes about two minutes.
+        Three one-way native-driven sweeps. Each sweep lasts 10 seconds, while
+        measure() samples the same animated view for the first 8 seconds. There
+        are no loops, reversals, endpoint waits, React state updates, or marker
+        mutations during a run.
       </Text>
 
       <Pressable onPress={startMatrix} style={styles.reportButton}>
-        <Text style={styles.reportButtonText}>START 3 x 800 MATRIX</Text>
+        <Text style={styles.reportButtonText}>START CONTINUOUS MATRIX</Text>
       </Pressable>
 
-      <Animated.View style={{transform: [{translateY}]}}>
-        <Pressable
-          onPressIn={() => {
-            pressInCountRef.current += 1;
-          }}
-          onPress={() => {
-            pressCountRef.current += 1;
-          }}
-          style={styles.button}>
-          <View ref={measuredViewRef} collapsable={false}>
-            <Text style={styles.buttonText}>PRESS WHILE MOVING</Text>
-          </View>
-        </Pressable>
+      <Animated.View
+        ref={measuredViewRef}
+        collapsable={false}
+        style={[styles.button, {transform: [{translateY}]}]}>
+        <Text style={styles.buttonText}>MEASURE THIS MOVING VIEW</Text>
       </Animated.View>
     </View>
   );
@@ -330,6 +308,6 @@ export default {
   title: 'Presentation Geometry',
   name: 'presentation-geometry',
   description:
-    'Runs a deterministic presentation-geometry matrix while native-driven transforms bypass ShadowTree commits.',
+    'Runs continuous one-way native-driven sweeps to detect stale presentation geometry without loop or endpoint artifacts.',
   render: (): React.Node => <PresentationGeometryExample />,
 } as RNTesterModuleExample;

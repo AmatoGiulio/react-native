@@ -7,8 +7,10 @@
 
 #include "LazyShadowTreeRevisionConsistencyManager.h"
 
+#include <folly/json.h>
 #include <glog/logging.h>
 #include <react/renderer/core/ComponentDescriptor.h>
+#include <react/renderer/core/LayoutableShadowNode.h>
 #include <react/renderer/core/PropsParserContext.h>
 #include <react/renderer/core/RawProps.h>
 #include <react/renderer/core/ShadowNodeFragment.h>
@@ -25,6 +27,11 @@ struct ResolvedPresentedPropsSnapshot {
   std::shared_ptr<const ShadowNodeFamily> family;
   folly::dynamic props;
 };
+
+int& transformProbeCount() {
+  static int value = 0;
+  return value;
+}
 
 RootShadowNode::Shared applyPresentationProps(
     const RootShadowNode::Shared& committedRoot) {
@@ -69,8 +76,10 @@ RootShadowNode::Shared applyPresentationProps(
           const ShadowNodeFragment& fragment) {
         auto newProps = ShadowNodeFragment::propsPlaceholder();
         auto snapshotIt = resolvedSnapshots.find(shadowNode.getTag());
-        if (snapshotIt != resolvedSnapshots.end() &&
-            snapshotIt->second.family == shadowNode.getFamilyShared()) {
+        const bool hasPresentedSnapshot =
+            snapshotIt != resolvedSnapshots.end() &&
+            snapshotIt->second.family == shadowNode.getFamilyShared();
+        if (hasPresentedSnapshot) {
           PropsParserContext propsParserContext{
               shadowNode.getSurfaceId(), *shadowNode.getContextContainer()};
           newProps = shadowNode.getComponentDescriptor().cloneProps(
@@ -79,10 +88,28 @@ RootShadowNode::Shared applyPresentationProps(
               RawProps(snapshotIt->second.props));
         }
 
-        return shadowNode.clone(
+        auto clonedNode = shadowNode.clone(
             {.props = newProps,
              .children = fragment.children,
              .state = shadowNode.getState()});
+
+        if (hasPresentedSnapshot && transformProbeCount() < 8) {
+          const auto* committedLayoutable =
+              dynamic_cast<const LayoutableShadowNode*>(&shadowNode);
+          const auto* clonedLayoutable =
+              dynamic_cast<const LayoutableShadowNode*>(clonedNode.get());
+          if (committedLayoutable != nullptr && clonedLayoutable != nullptr) {
+            const auto committedTransform = committedLayoutable->getTransform();
+            const auto clonedTransform = clonedLayoutable->getTransform();
+            LOG(INFO) << "[PG_PATCH] clone-probe tag=" << shadowNode.getTag()
+                      << " raw=" << folly::toJson(snapshotIt->second.props)
+                      << " committedY=" << committedTransform.matrix[13]
+                      << " clonedY=" << clonedTransform.matrix[13];
+            transformProbeCount()++;
+          }
+        }
+
+        return clonedNode;
       });
 
   if (presentedRoot == nullptr) {

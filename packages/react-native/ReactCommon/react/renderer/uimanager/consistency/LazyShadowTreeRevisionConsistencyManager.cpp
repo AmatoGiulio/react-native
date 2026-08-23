@@ -89,6 +89,14 @@ RootShadowNode::Shared applyPresentationProps(
     return committedRoot;
   }
 
+  static bool didLogPresentedRoot = false;
+  if (!didLogPresentedRoot) {
+    didLogPresentedRoot = true;
+    LOG(INFO) << "[PG_PATCH] root-built surface="
+              << committedRoot->getSurfaceId()
+              << " families=" << families.size();
+  }
+
   return std::static_pointer_cast<RootShadowNode>(presentedRoot);
 }
 

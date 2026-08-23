@@ -7,15 +7,103 @@
 
 #include "DOM.h"
 #include <react/renderer/components/text/RawTextShadowNode.h>
+#include <react/renderer/core/ComponentDescriptor.h>
 #include <react/renderer/core/LayoutMetrics.h>
+#include <react/renderer/core/PropsParserContext.h>
+#include <react/renderer/core/RawProps.h>
+#include <react/renderer/core/ShadowNodeFragment.h>
+#include <react/renderer/dom/PresentationPropsRegistry.h>
 #include <react/renderer/graphics/Point.h>
 #include <react/renderer/graphics/Rect.h>
 #include <react/renderer/graphics/Size.h>
 #include <cmath>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace facebook::react::dom {
 
 namespace {
+
+struct ResolvedPresentedPropsSnapshot {
+  std::shared_ptr<const ShadowNodeFamily> family;
+  folly::dynamic props;
+};
+
+RootShadowNode::Shared getPresentationRevisionForTarget(
+    const RootShadowNode::Shared& currentRevision,
+    const ShadowNode& shadowNode) {
+  if (currentRevision == nullptr) {
+    return nullptr;
+  }
+
+  auto snapshots = PresentationPropsRegistry::get(shadowNode.getSurfaceId());
+  if (snapshots.empty()) {
+    return currentRevision;
+  }
+
+  auto targetFamily = shadowNode.getFamilyShared();
+  std::unordered_set<std::shared_ptr<const ShadowNodeFamily>> pathFamilies;
+  pathFamilies.insert(targetFamily);
+
+  if (!ShadowNode::sameFamily(*currentRevision, shadowNode)) {
+    auto ancestors = targetFamily->getAncestors(*currentRevision);
+    if (ancestors.empty()) {
+      return currentRevision;
+    }
+
+    for (const auto& ancestor : ancestors) {
+      pathFamilies.insert(ancestor.first.get().getFamilyShared());
+    }
+  }
+
+  std::unordered_set<std::shared_ptr<const ShadowNodeFamily>> familiesToClone;
+  std::unordered_map<Tag, ResolvedPresentedPropsSnapshot> resolvedSnapshots;
+  for (const auto& [tag, snapshot] : snapshots) {
+    auto family = snapshot.family.lock();
+    if (family == nullptr || !pathFamilies.contains(family)) {
+      continue;
+    }
+
+    familiesToClone.insert(family);
+    resolvedSnapshots.emplace(
+        tag,
+        ResolvedPresentedPropsSnapshot{
+            .family = std::move(family),
+            .props = snapshot.props,
+        });
+  }
+
+  if (familiesToClone.empty()) {
+    return currentRevision;
+  }
+
+  auto presentedRoot = currentRevision->cloneMultiple(
+      familiesToClone,
+      [&resolvedSnapshots](
+          const ShadowNode& node,
+          const ShadowNodeFragment& fragment) {
+        auto newProps = ShadowNodeFragment::propsPlaceholder();
+        auto snapshotIt = resolvedSnapshots.find(node.getTag());
+        if (snapshotIt != resolvedSnapshots.end() &&
+            snapshotIt->second.family == node.getFamilyShared()) {
+          PropsParserContext propsParserContext{
+              node.getSurfaceId(), *node.getContextContainer()};
+          newProps = node.getComponentDescriptor().cloneProps(
+              propsParserContext,
+              node.getProps(),
+              RawProps(snapshotIt->second.props));
+        }
+
+        return node.clone(
+            {.props = newProps,
+             .children = fragment.children,
+             .state = node.getState()});
+      });
+
+  return presentedRoot == nullptr
+      ? currentRevision
+      : std::static_pointer_cast<RootShadowNode>(presentedRoot);
+}
 
 std::shared_ptr<const ShadowNode> getShadowNodeInRevision(
     const RootShadowNode::Shared& currentRevision,
@@ -274,14 +362,17 @@ DOMRect getBoundingClientRect(
     const RootShadowNode::Shared& currentRevision,
     const ShadowNode& shadowNode,
     bool includeTransform) {
+  auto geometryRevision = includeTransform
+      ? getPresentationRevisionForTarget(currentRevision, shadowNode)
+      : currentRevision;
   auto shadowNodeInCurrentRevision =
-      getShadowNodeInRevision(currentRevision, shadowNode);
+      getShadowNodeInRevision(geometryRevision, shadowNode);
   if (shadowNodeInCurrentRevision == nullptr) {
     return DOMRect{};
   }
 
   auto layoutMetrics = getLayoutMetricsFromRoot(
-      *currentRevision,
+      *geometryRevision,
       shadowNode,
       {.includeTransform = includeTransform, .includeViewportOffset = true});
 
@@ -492,14 +583,16 @@ std::string getTagName(const ShadowNode& shadowNode) {
 RNMeasureRect measure(
     const RootShadowNode::Shared& currentRevision,
     const ShadowNode& shadowNode) {
+  auto geometryRevision =
+      getPresentationRevisionForTarget(currentRevision, shadowNode);
   auto shadowNodeInCurrentRevision =
-      getShadowNodeInRevision(currentRevision, shadowNode);
+      getShadowNodeInRevision(geometryRevision, shadowNode);
   if (shadowNodeInCurrentRevision == nullptr) {
     return RNMeasureRect{};
   }
 
   auto layoutMetrics = getLayoutMetricsFromRoot(
-      *currentRevision,
+      *geometryRevision,
       *shadowNodeInCurrentRevision,
       {.includeTransform = true, .includeViewportOffset = false});
 
@@ -527,14 +620,16 @@ RNMeasureRect measure(
 DOMRect measureInWindow(
     const RootShadowNode::Shared& currentRevision,
     const ShadowNode& shadowNode) {
+  auto geometryRevision =
+      getPresentationRevisionForTarget(currentRevision, shadowNode);
   auto shadowNodeInCurrentRevision =
-      getShadowNodeInRevision(currentRevision, shadowNode);
+      getShadowNodeInRevision(geometryRevision, shadowNode);
   if (shadowNodeInCurrentRevision == nullptr) {
     return DOMRect{};
   }
 
   auto layoutMetrics = getLayoutMetricsFromRoot(
-      *currentRevision,
+      *geometryRevision,
       *shadowNodeInCurrentRevision,
       {.includeTransform = true, .includeViewportOffset = true});
 

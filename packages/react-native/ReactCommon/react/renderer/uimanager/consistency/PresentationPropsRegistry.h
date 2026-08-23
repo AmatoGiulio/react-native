@@ -12,7 +12,6 @@
 #include <react/renderer/core/ShadowNodeFamily.h>
 
 #include <memory>
-#include <mutex>
 #include <unordered_map>
 
 namespace facebook::react {
@@ -30,10 +29,8 @@ using PresentedPropsSnapshotMap =
  * directly to native views without producing a new committed ShadowTree
  * revision.
  *
- * The registry deliberately tracks presentation state separately from the
- * AnimationBackend reconciliation registry. Geometry readers may use a copy of
- * this state to build an ephemeral ShadowTree revision; it must never be
- * mounted or propagated through RSNRU.
+ * Storage is defined in PresentationPropsRegistry.cpp so producers and
+ * consumers always share one runtime registry instance.
  */
 class PresentationPropsRegistry final {
  public:
@@ -41,58 +38,13 @@ class PresentationPropsRegistry final {
       SurfaceId surfaceId,
       Tag tag,
       const std::shared_ptr<const ShadowNodeFamily>& family,
-      folly::dynamic props) {
-    std::lock_guard lock(mutex());
-    auto& surfaceProps = entries()[surfaceId];
-    auto it = surfaceProps.find(tag);
-    if (it == surfaceProps.end()) {
-      surfaceProps.emplace(
-          tag,
-          PresentedPropsSnapshot{
-              .family = family,
-              .props = std::move(props),
-          });
-      return;
-    }
+      folly::dynamic props);
 
-    it->second.family = family;
-    it->second.props.merge_patch(props);
-  }
+  static void remove(SurfaceId surfaceId, Tag tag);
 
-  static void remove(SurfaceId surfaceId, Tag tag) {
-    std::lock_guard lock(mutex());
-    auto surfaceIt = entries().find(surfaceId);
-    if (surfaceIt == entries().end()) {
-      return;
-    }
+  static PresentedPropsSnapshotMap get(SurfaceId surfaceId);
 
-    surfaceIt->second.erase(tag);
-    if (surfaceIt->second.empty()) {
-      entries().erase(surfaceIt);
-    }
-  }
-
-  static PresentedPropsSnapshotMap get(SurfaceId surfaceId) {
-    std::lock_guard lock(mutex());
-    auto it = entries().find(surfaceId);
-    return it == entries().end() ? PresentedPropsSnapshotMap{} : it->second;
-  }
-
-  static void clear(SurfaceId surfaceId) {
-    std::lock_guard lock(mutex());
-    entries().erase(surfaceId);
-  }
-
- private:
-  static std::mutex& mutex() {
-    static std::mutex instance;
-    return instance;
-  }
-
-  static std::unordered_map<SurfaceId, PresentedPropsSnapshotMap>& entries() {
-    static std::unordered_map<SurfaceId, PresentedPropsSnapshotMap> instance;
-    return instance;
-  }
+  static void clear(SurfaceId surfaceId);
 };
 
 } // namespace facebook::react

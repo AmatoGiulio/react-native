@@ -6,7 +6,7 @@ RNTESTER="$ROOT/packages/rn-tester"
 DERIVED_DATA="${TMPDIR:-/tmp}/rn-presentation-geometry-ios-build"
 LOG="$DERIVED_DATA/xcodebuild.log"
 
-for tool in bundle pod xcodebuild; do
+for tool in bundle xcodebuild; do
   command -v "$tool" >/dev/null 2>&1 || {
     echo "Missing required tool: $tool" >&2
     exit 1

@@ -8,6 +8,7 @@
 #include "LazyShadowTreeRevisionConsistencyManager.h"
 
 #include <glog/logging.h>
+#include <react/renderer/core/ComponentDescriptor.h>
 #include <react/renderer/core/PropsParserContext.h>
 #include <react/renderer/core/RawProps.h>
 #include <react/renderer/core/ShadowNodeFragment.h>

@@ -61,9 +61,11 @@ function PresentationGeometryExample(): React.Node {
         position.
       </Text>
       <View style={styles.readout}>
-        <Text>measured pageY: {pageY == null ? '—' : pageY.toFixed(1)}</Text>
-        <Text>onPressIn: {pressInCount}</Text>
-        <Text>onPress: {pressCount}</Text>
+        <Text style={styles.readoutText}>
+          measured pageY: {pageY == null ? '—' : pageY.toFixed(1)}
+        </Text>
+        <Text style={styles.readoutText}>onPressIn: {pressInCount}</Text>
+        <Text style={styles.readoutText}>onPress: {pressCount}</Text>
       </View>
       <Animated.View style={{transform: [{translateY}]}}>
         <Pressable
@@ -85,17 +87,23 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   title: {
+    color: 'white',
     fontSize: 20,
     fontWeight: '600',
     marginBottom: 8,
   },
   help: {
+    color: '#d1d5db',
     maxWidth: 520,
     marginBottom: 16,
   },
   readout: {
     gap: 4,
     marginBottom: 40,
+  },
+  readoutText: {
+    color: 'white',
+    fontVariant: ['tabular-nums'],
   },
   button: {
     alignSelf: 'flex-start',

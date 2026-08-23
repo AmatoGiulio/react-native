@@ -14,7 +14,7 @@
 #include <memory>
 #include <unordered_map>
 
-namespace facebook::react::dom {
+namespace facebook::react {
 
 struct PresentedPropsSnapshot {
   std::weak_ptr<const ShadowNodeFamily> family;
@@ -47,4 +47,4 @@ class PresentationPropsRegistry final {
   static void clear(SurfaceId surfaceId);
 };
 
-} // namespace facebook::react::dom
+} // namespace facebook::react

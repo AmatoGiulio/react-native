@@ -72,6 +72,7 @@ Pod::Spec.new do |s|
   end
 
   s.subspec "animationbackend" do |ss|
+    ss.dependency           "React-Fabric/core"
     ss.source_files         = podspec_sources("react/renderer/animationbackend/**/*.{m,mm,cpp,h}", "react/renderer/animationbackend/**/*.{h}")
     ss.header_dir           = "react/renderer/animationbackend"
   end
@@ -171,6 +172,7 @@ Pod::Spec.new do |s|
   end
 
   s.subspec "dom" do |ss|
+    ss.dependency             "React-Fabric/core"
     ss.dependency             "React-graphics"
     ss.source_files         = podspec_sources("react/renderer/dom/**/*.{m,mm,cpp,h}", "react/renderer/dom/**/*.{h}")
     ss.exclude_files        = "react/renderer/dom/tests"

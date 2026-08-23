@@ -9,10 +9,10 @@
 #include <react/renderer/components/text/RawTextShadowNode.h>
 #include <react/renderer/core/ComponentDescriptor.h>
 #include <react/renderer/core/LayoutMetrics.h>
+#include <react/renderer/core/PresentationPropsRegistry.h>
 #include <react/renderer/core/PropsParserContext.h>
 #include <react/renderer/core/RawProps.h>
 #include <react/renderer/core/ShadowNodeFragment.h>
-#include <react/renderer/dom/PresentationPropsRegistry.h>
 #include <react/renderer/graphics/Point.h>
 #include <react/renderer/graphics/Rect.h>
 #include <react/renderer/graphics/Size.h>

@@ -11,7 +11,7 @@
 #include <react/debug/react_native_assert.h>
 #include <react/featureflags/ReactNativeFeatureFlags.h>
 #include <react/renderer/animationbackend/AnimatedPropsSerializer.h>
-#include <react/renderer/dom/PresentationPropsRegistry.h>
+#include <react/renderer/core/PresentationPropsRegistry.h>
 #include <react/renderer/graphics/Color.h>
 #include <chrono>
 #include <utility>
@@ -235,7 +235,7 @@ void AnimationBackend::synchronouslyUpdateProps(
       // props node disconnects. Drop any presentation override for the tag so
       // subsequent geometry reads fall back to the committed props.
       if (dyn.empty()) {
-        dom::PresentationPropsRegistry::remove(surfaceId, tag);
+        PresentationPropsRegistry::remove(surfaceId, tag);
         continue;
       }
 
@@ -250,7 +250,7 @@ void AnimationBackend::synchronouslyUpdateProps(
         continue;
       }
 
-      dom::PresentationPropsRegistry::update(
+      PresentationPropsRegistry::update(
           surfaceId, tag, *familyIt, std::move(geometryProps));
     }
   }
@@ -295,12 +295,12 @@ void AnimationBackend::requestAsyncFlushForSurfaces(
 
 void AnimationBackend::clearRegistry(SurfaceId surfaceId) {
   animatedPropsRegistry_->clear(surfaceId);
-  dom::PresentationPropsRegistry::clear(surfaceId);
+  PresentationPropsRegistry::clear(surfaceId);
 }
 
 void AnimationBackend::clearRegistryOnSurfaceStop(SurfaceId surfaceId) {
   animatedPropsRegistry_->clearOnSurfaceStop(surfaceId);
-  dom::PresentationPropsRegistry::clear(surfaceId);
+  PresentationPropsRegistry::clear(surfaceId);
 }
 
 void AnimationBackend::registerJSInvoker(

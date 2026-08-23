@@ -9,8 +9,9 @@
 
 #include <mutex>
 #include <unordered_map>
+#include <utility>
 
-namespace facebook::react::dom {
+namespace facebook::react {
 namespace {
 
 std::mutex& registryMutex() {
@@ -70,4 +71,4 @@ void PresentationPropsRegistry::clear(SurfaceId surfaceId) {
   registryEntries().erase(surfaceId);
 }
 
-} // namespace facebook::react::dom
+} // namespace facebook::react

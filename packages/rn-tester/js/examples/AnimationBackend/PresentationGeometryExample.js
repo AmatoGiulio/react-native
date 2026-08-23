@@ -22,164 +22,248 @@ import {
 } from 'react-native';
 
 const SAMPLE_INTERVAL_MS = 50;
+const SAMPLES_PER_RUN = 800;
+const RUN_COUNT = 3;
+const RUN_GAP_MS = 300;
 const FREEZE_EPSILON_PX = 0.25;
 const FREEZE_THRESHOLD_MS = 120;
 const WARMUP_MS = 600;
 
+type RunResult = {
+  run: number,
+  minPageY: number,
+  maxPageY: number,
+  span: number,
+  samples: number,
+  freezeEpisodes: number,
+  maxFreezeMs: number,
+  durationMs: number,
+};
+
 function PresentationGeometryExample(): React.Node {
   const translateY = React.useRef(new Animated.Value(0)).current;
-  const measuredMarkerY = React.useRef(new Animated.Value(0)).current;
-  const rootRef = React.useRef<React.ElementRef<typeof View> | null>(null);
   const measuredViewRef = React.useRef<React.ElementRef<typeof View> | null>(
     null,
   );
-  const minPageYRef = React.useRef<number>(Number.POSITIVE_INFINITY);
-  const maxPageYRef = React.useRef<number>(Number.NEGATIVE_INFINITY);
+  const runningRef = React.useRef(false);
+  const mountedRef = React.useRef(true);
   const pressInCountRef = React.useRef(0);
   const pressCountRef = React.useRef(0);
-  const sampleCountRef = React.useRef(0);
-  const lastMeasuredPageYRef = React.useRef<?number>(null);
-  const lastSampleAtRef = React.useRef<?number>(null);
-  const stableRunStartedAtRef = React.useRef<?number>(null);
-  const freezeEpisodeActiveRef = React.useRef(false);
-  const freezeEpisodeCountRef = React.useRef(0);
-  const maxFreezeMsRef = React.useRef(0);
-  const mountedAtRef = React.useRef(Date.now());
-  const measurementPendingRef = React.useRef(false);
+  const animationRef = React.useRef<?{stop: () => void}>(null);
+  const intervalRef = React.useRef<?IntervalID>(null);
+  const nextRunTimeoutRef = React.useRef<?TimeoutID>(null);
 
   React.useEffect(() => {
-    const animation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(translateY, {
-          toValue: 220,
-          duration: 1400,
-          easing: Easing.linear,
-          useNativeDriver: true,
-        }),
-        Animated.timing(translateY, {
-          toValue: 0,
-          duration: 1400,
-          easing: Easing.linear,
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    animation.start();
-    return () => animation.stop();
-  }, [translateY]);
+    return () => {
+      mountedRef.current = false;
+      animationRef.current?.stop();
+      if (intervalRef.current != null) {
+        clearInterval(intervalRef.current);
+      }
+      if (nextRunTimeoutRef.current != null) {
+        clearTimeout(nextRunTimeoutRef.current);
+      }
+    };
+  }, []);
 
-  React.useEffect(() => {
-    const interval = setInterval(() => {
-      const root = rootRef.current;
-      const measuredView = measuredViewRef.current;
-      if (measurementPendingRef.current || root == null || measuredView == null) {
+  const startMatrix = React.useCallback(() => {
+    if (runningRef.current) {
+      return;
+    }
+
+    runningRef.current = true;
+    pressInCountRef.current = 0;
+    pressCountRef.current = 0;
+    const results: Array<RunResult> = [];
+
+    const finishMatrix = () => {
+      runningRef.current = false;
+      animationRef.current?.stop();
+      animationRef.current = null;
+
+      const totalFreezeEpisodes = results.reduce(
+        (sum, result) => sum + result.freezeEpisodes,
+        0,
+      );
+      const maxFreezeMs = results.reduce(
+        (max, result) => Math.max(max, result.maxFreezeMs),
+        0,
+      );
+      const pressGap = pressInCountRef.current - pressCountRef.current;
+      const lines = results.map(
+        result =>
+          `run ${result.run}: span=${result.span.toFixed(1)} ` +
+          `freeze=${result.freezeEpisodes} max=${result.maxFreezeMs}ms ` +
+          `duration=${result.durationMs}ms`,
+      );
+      const summary =
+        `${lines.join('\n')}\n\n` +
+        `samples/run: ${SAMPLES_PER_RUN}\n` +
+        `total freeze episodes: ${totalFreezeEpisodes}\n` +
+        `matrix max freeze: ${maxFreezeMs}ms\n` +
+        `onPressIn: ${pressInCountRef.current}\n` +
+        `onPress: ${pressCountRef.current}\n` +
+        `press gap: ${pressGap}`;
+
+      console.log(
+        `[PG_MATRIX] ${JSON.stringify({
+          sampleIntervalMs: SAMPLE_INTERVAL_MS,
+          samplesPerRun: SAMPLES_PER_RUN,
+          runs: results,
+          totalFreezeEpisodes,
+          maxFreezeMs,
+          onPressIn: pressInCountRef.current,
+          onPress: pressCountRef.current,
+          pressGap,
+        })}`,
+      );
+      Alert.alert('Presentation geometry matrix', summary);
+    };
+
+    const startRun = (runIndex: number) => {
+      if (!mountedRef.current) {
         return;
       }
 
-      measurementPendingRef.current = true;
-      root.measure(
-        (_rootX, _rootY, _rootWidth, _rootHeight, _rootPageX, rootPageY) => {
-          measuredView.measure(
-            (_x, _y, _width, _height, _pageX, measuredPageY) => {
-              measurementPendingRef.current = false;
-              const now = Date.now();
-              sampleCountRef.current += 1;
+      animationRef.current?.stop();
+      translateY.stopAnimation();
+      translateY.setValue(0);
 
-              minPageYRef.current = Math.min(
-                minPageYRef.current,
-                measuredPageY,
-              );
-              maxPageYRef.current = Math.max(
-                maxPageYRef.current,
-                measuredPageY,
-              );
-              measuredMarkerY.setValue(measuredPageY - rootPageY);
+      const runStartedAt = Date.now();
+      let minPageY = Number.POSITIVE_INFINITY;
+      let maxPageY = Number.NEGATIVE_INFINITY;
+      let sampleCount = 0;
+      let previousPageY: ?number = null;
+      let previousSampleAt: ?number = null;
+      let stableRunStartedAt: ?number = null;
+      let freezeEpisodeActive = false;
+      let freezeEpisodes = 0;
+      let maxFreezeMs = 0;
+      let measurementPending = false;
 
-              const previousPageY = lastMeasuredPageYRef.current;
-              const previousSampleAt = lastSampleAtRef.current;
-              const isPastWarmup = now - mountedAtRef.current >= WARMUP_MS;
+      const animation = Animated.loop(
+        Animated.sequence([
+          Animated.timing(translateY, {
+            toValue: 220,
+            duration: 1400,
+            easing: Easing.linear,
+            useNativeDriver: true,
+          }),
+          Animated.timing(translateY, {
+            toValue: 0,
+            duration: 1400,
+            easing: Easing.linear,
+            useNativeDriver: true,
+          }),
+        ]),
+      );
+      animationRef.current = animation;
+      animation.start();
 
-              if (
-                isPastWarmup &&
-                previousPageY != null &&
-                previousSampleAt != null &&
-                Math.abs(measuredPageY - previousPageY) <= FREEZE_EPSILON_PX
-              ) {
-                if (stableRunStartedAtRef.current == null) {
-                  stableRunStartedAtRef.current = previousSampleAt;
-                }
+      const finishRun = () => {
+        if (intervalRef.current != null) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+        animation.stop();
+        animationRef.current = null;
 
-                const freezeMs = now - stableRunStartedAtRef.current;
-                maxFreezeMsRef.current = Math.max(
-                  maxFreezeMsRef.current,
-                  freezeMs,
-                );
+        const result: RunResult = {
+          run: runIndex + 1,
+          minPageY,
+          maxPageY,
+          span: maxPageY - minPageY,
+          samples: sampleCount,
+          freezeEpisodes,
+          maxFreezeMs,
+          durationMs: Date.now() - runStartedAt,
+        };
+        results.push(result);
+        console.log(`[PG_MATRIX] run ${result.run} ${JSON.stringify(result)}`);
 
-                if (
-                  freezeMs >= FREEZE_THRESHOLD_MS &&
-                  !freezeEpisodeActiveRef.current
-                ) {
-                  freezeEpisodeActiveRef.current = true;
-                  freezeEpisodeCountRef.current += 1;
-                  console.log(
-                    `[PG] freeze episode #${freezeEpisodeCountRef.current} ` +
-                      `${freezeMs}ms at pageY=${measuredPageY.toFixed(1)}`,
-                  );
-                }
-              } else {
-                stableRunStartedAtRef.current = null;
-                freezeEpisodeActiveRef.current = false;
+        if (runIndex + 1 >= RUN_COUNT) {
+          finishMatrix();
+          return;
+        }
+
+        nextRunTimeoutRef.current = setTimeout(() => {
+          nextRunTimeoutRef.current = null;
+          startRun(runIndex + 1);
+        }, RUN_GAP_MS);
+      };
+
+      intervalRef.current = setInterval(() => {
+        const measuredView = measuredViewRef.current;
+        if (
+          !mountedRef.current ||
+          measurementPending ||
+          measuredView == null ||
+          sampleCount >= SAMPLES_PER_RUN
+        ) {
+          return;
+        }
+
+        measurementPending = true;
+        measuredView.measure(
+          (_x, _y, _width, _height, _pageX, measuredPageY) => {
+            measurementPending = false;
+            if (!mountedRef.current) {
+              return;
+            }
+
+            const now = Date.now();
+            sampleCount += 1;
+            minPageY = Math.min(minPageY, measuredPageY);
+            maxPageY = Math.max(maxPageY, measuredPageY);
+
+            const isPastWarmup = now - runStartedAt >= WARMUP_MS;
+            if (
+              isPastWarmup &&
+              previousPageY != null &&
+              previousSampleAt != null &&
+              Math.abs(measuredPageY - previousPageY) <= FREEZE_EPSILON_PX
+            ) {
+              if (stableRunStartedAt == null) {
+                stableRunStartedAt = previousSampleAt;
               }
 
-              lastMeasuredPageYRef.current = measuredPageY;
-              lastSampleAtRef.current = now;
-            },
-          );
-        },
-      );
-    }, SAMPLE_INTERVAL_MS);
-    return () => clearInterval(interval);
-  }, [measuredMarkerY]);
+              const freezeMs = now - stableRunStartedAt;
+              maxFreezeMs = Math.max(maxFreezeMs, freezeMs);
+              if (freezeMs >= FREEZE_THRESHOLD_MS && !freezeEpisodeActive) {
+                freezeEpisodeActive = true;
+                freezeEpisodes += 1;
+              }
+            } else {
+              stableRunStartedAt = null;
+              freezeEpisodeActive = false;
+            }
 
-  const reportResults = React.useCallback(() => {
-    const minPageY = minPageYRef.current;
-    const maxPageY = maxPageYRef.current;
-    const hasMeasurements =
-      Number.isFinite(minPageY) && Number.isFinite(maxPageY);
-    const range = hasMeasurements ? maxPageY - minPageY : 0;
-    const pressGap = pressInCountRef.current - pressCountRef.current;
+            previousPageY = measuredPageY;
+            previousSampleAt = now;
 
-    Alert.alert(
-      'Presentation geometry results',
-      `pageY min: ${hasMeasurements ? minPageY.toFixed(1) : '—'}\n` +
-        `pageY max: ${hasMeasurements ? maxPageY.toFixed(1) : '—'}\n` +
-        `pageY span: ${hasMeasurements ? range.toFixed(1) : '—'}\n` +
-        `samples: ${sampleCountRef.current}\n` +
-        `freeze episodes (>=${FREEZE_THRESHOLD_MS}ms): ${freezeEpisodeCountRef.current}\n` +
-        `max freeze: ${maxFreezeMsRef.current}ms\n` +
-        `onPressIn: ${pressInCountRef.current}\n` +
-        `onPress: ${pressCountRef.current}\n` +
-        `press gap: ${pressGap}`,
-    );
-  }, []);
+            if (sampleCount >= SAMPLES_PER_RUN) {
+              finishRun();
+            }
+          },
+        );
+      }, SAMPLE_INTERVAL_MS);
+    };
+
+    startRun(0);
+  }, [translateY]);
 
   return (
-    <View ref={rootRef} collapsable={false} style={styles.container}>
-      <Text style={styles.title}>Presentation geometry proof</Text>
+    <View style={styles.container}>
+      <Text style={styles.title}>Presentation geometry matrix</Text>
       <Text style={styles.help}>
-        No React state is updated while this test runs. The red line shows the
-        current measure() result. Press the moving button around 20 times, then
-        tap REPORT RESULTS.
+        Deterministic geometry-only test: 3 runs x 800 samples at 50 ms. No
+        React state updates and no measurement marker mutations during a run.
+        The full matrix takes about two minutes.
       </Text>
 
-      <Pressable onPress={reportResults} style={styles.reportButton}>
-        <Text style={styles.reportButtonText}>REPORT RESULTS</Text>
+      <Pressable onPress={startMatrix} style={styles.reportButton}>
+        <Text style={styles.reportButtonText}>START 3 x 800 MATRIX</Text>
       </Pressable>
-
-      <Animated.View
-        pointerEvents="none"
-        style={[styles.measureMarker, {transform: [{translateY: measuredMarkerY}]}]}
-      />
 
       <Animated.View style={{transform: [{translateY}]}}>
         <Pressable
@@ -229,15 +313,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  measureMarker: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    height: 2,
-    backgroundColor: '#ef4444',
-    zIndex: 20,
-  },
   button: {
     alignSelf: 'flex-start',
     backgroundColor: '#2563eb',
@@ -255,6 +330,6 @@ export default {
   title: 'Presentation Geometry',
   name: 'presentation-geometry',
   description:
-    'Tests geometry and Pressability while native-driven transforms bypass ShadowTree commits without introducing observation commits.',
+    'Runs a deterministic presentation-geometry matrix while native-driven transforms bypass ShadowTree commits.',
   render: (): React.Node => <PresentationGeometryExample />,
 } as RNTesterModuleExample;

@@ -17,6 +17,7 @@ target_link_libraries(react_renderer_animationbackend
       react_codegen_rncore
       react_debug
       react_renderer_core
+      react_renderer_dom
       react_renderer_graphics
       react_renderer_mounting
       react_renderer_uimanager

@@ -100,7 +100,7 @@ adb reverse "tcp:$METRO_PORT" "tcp:$METRO_PORT" >/dev/null
 
 find_and_tap_matrix_button() {
   local label="$1"
-  local ui_xml="$RESULT_DIR/${label}-ui.xml"
+  local ui_xml="$RESULT_DIR/${label}-start-ui.xml"
   local coords=""
 
   for _ in $(seq 1 60); do
@@ -147,13 +147,75 @@ wait_for_matrix_result() {
   local label="$1"
   local log_file="$2"
   local result_file="$RESULT_DIR/${label}.json"
+  local ui_xml="$RESULT_DIR/${label}-result-ui.xml"
   local elapsed=0
+  local parsed=""
 
   while (( elapsed < RESULT_TIMEOUT_SECONDS )); do
-    if grep -F '[PG_MATRIX] {"sampleIntervalMs"' "$log_file" >/dev/null 2>&1; then
-      local line
-      line="$(grep -F '[PG_MATRIX] {"sampleIntervalMs"' "$log_file" | tail -n 1)"
-      printf '%s\n' "${line#*\[PG_MATRIX\] }" >"$result_file"
+    adb shell uiautomator dump /sdcard/pg-result.xml >/dev/null 2>&1 || true
+    adb shell cat /sdcard/pg-result.xml >"$ui_xml" 2>/dev/null || true
+
+    parsed="$(python3 - "$ui_xml" <<'PY'
+import json
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+path = sys.argv[1]
+try:
+    root = ET.parse(path).getroot()
+except Exception:
+    sys.exit(0)
+
+texts = [node.attrib.get('text', '') for node in root.iter('node')]
+text = '\n'.join(part for part in texts if part)
+if 'Presentation geometry matrix' not in text:
+    sys.exit(0)
+
+runs = re.findall(
+    r'run\s+(\d+):\s+span=([0-9.]+)\s+freeze=(\d+)\s+max=(\d+)ms\s+duration=(\d+)ms',
+    text,
+)
+if len(runs) != 3:
+    sys.exit(0)
+
+samples_match = re.search(r'samples/run:\s*(\d+)', text)
+total_match = re.search(r'total freeze episodes:\s*(\d+)', text)
+max_match = re.search(r'matrix max freeze:\s*(\d+)ms', text)
+press_in_match = re.search(r'onPressIn:\s*(\d+)', text)
+press_match = re.search(r'onPress:\s*(\d+)', text)
+press_gap_match = re.search(r'press gap:\s*(-?\d+)', text)
+if not all((samples_match, total_match, max_match, press_in_match, press_match, press_gap_match)):
+    sys.exit(0)
+
+samples = int(samples_match.group(1))
+run_data = [
+    {
+        'run': int(run),
+        'span': float(span),
+        'samples': samples,
+        'freezeEpisodes': int(freeze),
+        'maxFreezeMs': int(max_freeze),
+        'durationMs': int(duration),
+    }
+    for run, span, freeze, max_freeze, duration in runs
+]
+
+print(json.dumps({
+    'sampleIntervalMs': 50,
+    'samplesPerRun': samples,
+    'runs': run_data,
+    'totalFreezeEpisodes': int(total_match.group(1)),
+    'maxFreezeMs': int(max_match.group(1)),
+    'onPressIn': int(press_in_match.group(1)),
+    'onPress': int(press_match.group(1)),
+    'pressGap': int(press_gap_match.group(1)),
+}))
+PY
+)"
+
+    if [[ -n "$parsed" ]]; then
+      printf '%s\n' "$parsed" >"$result_file"
       echo "$result_file"
       return 0
     fi

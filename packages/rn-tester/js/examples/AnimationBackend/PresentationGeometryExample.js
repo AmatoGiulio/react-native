@@ -21,23 +21,22 @@ import {
   View,
 } from 'react-native';
 
+const PROTOCOL = 'PG_CONTINUOUS_V3';
 const SAMPLE_INTERVAL_MS = 50;
-const SAMPLES_PER_RUN = 160;
 const RUN_COUNT = 3;
 const RUN_GAP_MS = 300;
-const SWEEP_DURATION_MS = 10000;
-const FREEZE_EPSILON_PX = 0.25;
-const FREEZE_THRESHOLD_MS = 150;
-const WARMUP_MS = 300;
+const SWEEP_DURATION_MS = 15000;
+const SAMPLE_WINDOW_MS = 6000;
+const SWEEP_DISTANCE_PX = 300;
 
 type RunResult = {
   run: number,
-  minPageY: number,
-  maxPageY: number,
-  span: number,
   samples: number,
-  freezeEpisodes: number,
-  maxFreezeMs: number,
+  observedDelta: number,
+  expectedDelta: number,
+  trackingRatio: number,
+  meanAbsError: number,
+  maxAbsError: number,
   durationMs: number,
 };
 
@@ -48,6 +47,7 @@ function PresentationGeometryExample(): React.Node {
   const mountedRef = React.useRef(true);
   const animationRef = React.useRef<?{stop: () => void}>(null);
   const intervalRef = React.useRef<?IntervalID>(null);
+  const runTimeoutRef = React.useRef<?TimeoutID>(null);
   const nextRunTimeoutRef = React.useRef<?TimeoutID>(null);
 
   React.useEffect(() => {
@@ -56,6 +56,9 @@ function PresentationGeometryExample(): React.Node {
       animationRef.current?.stop();
       if (intervalRef.current != null) {
         clearInterval(intervalRef.current);
+      }
+      if (runTimeoutRef.current != null) {
+        clearTimeout(runTimeoutRef.current);
       }
       if (nextRunTimeoutRef.current != null) {
         clearTimeout(nextRunTimeoutRef.current);
@@ -76,40 +79,30 @@ function PresentationGeometryExample(): React.Node {
       animationRef.current?.stop();
       animationRef.current = null;
 
-      const totalFreezeEpisodes = results.reduce(
-        (sum, result) => sum + result.freezeEpisodes,
-        0,
-      );
-      const maxFreezeMs = results.reduce(
-        (max, result) => Math.max(max, result.maxFreezeMs),
-        0,
-      );
       const lines = results.map(
         result =>
-          `run ${result.run}: span=${result.span.toFixed(1)} ` +
-          `freeze=${result.freezeEpisodes} max=${result.maxFreezeMs}ms ` +
+          `run ${result.run}: samples=${result.samples} ` +
+          `observed=${result.observedDelta.toFixed(1)} ` +
+          `expected=${result.expectedDelta.toFixed(1)} ` +
+          `ratio=${result.trackingRatio.toFixed(3)} ` +
+          `mae=${result.meanAbsError.toFixed(1)} ` +
+          `maxErr=${result.maxAbsError.toFixed(1)} ` +
           `duration=${result.durationMs}ms`,
       );
       const summary =
+        `protocol: ${PROTOCOL}\n` +
         `${lines.join('\n')}\n\n` +
-        `samples/run: ${SAMPLES_PER_RUN}\n` +
-        `total freeze episodes: ${totalFreezeEpisodes}\n` +
-        `matrix max freeze: ${maxFreezeMs}ms\n` +
-        `onPressIn: 0\n` +
-        `onPress: 0\n` +
-        `press gap: 0`;
+        `window: ${SAMPLE_WINDOW_MS}ms\n` +
+        `sweep: ${SWEEP_DISTANCE_PX}px / ${SWEEP_DURATION_MS}ms`;
 
       console.log(
-        `[PG_MATRIX] ${JSON.stringify({
+        `[PG_MATRIX_V3] ${JSON.stringify({
+          protocol: PROTOCOL,
           sampleIntervalMs: SAMPLE_INTERVAL_MS,
-          samplesPerRun: SAMPLES_PER_RUN,
+          sampleWindowMs: SAMPLE_WINDOW_MS,
           sweepDurationMs: SWEEP_DURATION_MS,
+          sweepDistancePx: SWEEP_DISTANCE_PX,
           runs: results,
-          totalFreezeEpisodes,
-          maxFreezeMs,
-          onPressIn: 0,
-          onPress: 0,
-          pressGap: 0,
         })}`,
       );
       Alert.alert('Presentation geometry matrix', summary);
@@ -125,46 +118,56 @@ function PresentationGeometryExample(): React.Node {
       translateY.setValue(0);
 
       const runStartedAt = Date.now();
-      let minPageY = Number.POSITIVE_INFINITY;
-      let maxPageY = Number.NEGATIVE_INFINITY;
-      let sampleCount = 0;
-      let previousPageY: ?number = null;
-      let previousSampleAt: ?number = null;
-      let stableRunStartedAt: ?number = null;
-      let freezeEpisodeActive = false;
-      let freezeEpisodes = 0;
-      let maxFreezeMs = 0;
+      let runFinished = false;
       let measurementPending = false;
-
-      const animation = Animated.timing(translateY, {
-        toValue: 220,
-        duration: SWEEP_DURATION_MS,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      });
-      animationRef.current = animation;
-      animation.start();
+      let sampleCount = 0;
+      let firstSampleAt: ?number = null;
+      let firstPageY: ?number = null;
+      let lastSampleAt: ?number = null;
+      let lastPageY: ?number = null;
+      let errorSum = 0;
+      let errorSamples = 0;
+      let maxAbsError = 0;
 
       const finishRun = () => {
+        if (runFinished) {
+          return;
+        }
+        runFinished = true;
+
         if (intervalRef.current != null) {
           clearInterval(intervalRef.current);
           intervalRef.current = null;
         }
-        animation.stop();
+        if (runTimeoutRef.current != null) {
+          clearTimeout(runTimeoutRef.current);
+          runTimeoutRef.current = null;
+        }
+        animationRef.current?.stop();
         animationRef.current = null;
 
+        const sampleDuration =
+          firstSampleAt != null && lastSampleAt != null
+            ? Math.max(0, lastSampleAt - firstSampleAt)
+            : 0;
+        const observedDelta =
+          firstPageY != null && lastPageY != null ? lastPageY - firstPageY : 0;
+        const expectedDelta =
+          (SWEEP_DISTANCE_PX * sampleDuration) / SWEEP_DURATION_MS;
+        const trackingRatio =
+          expectedDelta > 0 ? observedDelta / expectedDelta : 0;
         const result: RunResult = {
           run: runIndex + 1,
-          minPageY,
-          maxPageY,
-          span: maxPageY - minPageY,
           samples: sampleCount,
-          freezeEpisodes,
-          maxFreezeMs,
+          observedDelta,
+          expectedDelta,
+          trackingRatio,
+          meanAbsError: errorSamples > 0 ? errorSum / errorSamples : 0,
+          maxAbsError,
           durationMs: Date.now() - runStartedAt,
         };
         results.push(result);
-        console.log(`[PG_MATRIX] run ${result.run} ${JSON.stringify(result)}`);
+        console.log(`[PG_MATRIX_V3] run ${result.run} ${JSON.stringify(result)}`);
 
         if (runIndex + 1 >= RUN_COUNT) {
           finishMatrix();
@@ -177,14 +180,21 @@ function PresentationGeometryExample(): React.Node {
         }, RUN_GAP_MS);
       };
 
+      const animation = Animated.timing(translateY, {
+        toValue: SWEEP_DISTANCE_PX,
+        duration: SWEEP_DURATION_MS,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      });
+      animationRef.current = animation;
+      animation.start();
+
       intervalRef.current = setInterval(() => {
+        if (runFinished || measurementPending || !mountedRef.current) {
+          return;
+        }
         const measuredView = measuredViewRef.current;
-        if (
-          !mountedRef.current ||
-          measurementPending ||
-          measuredView == null ||
-          sampleCount >= SAMPLES_PER_RUN
-        ) {
+        if (measuredView == null) {
           return;
         }
 
@@ -192,46 +202,37 @@ function PresentationGeometryExample(): React.Node {
         measuredView.measure(
           (_x, _y, _width, _height, _pageX, measuredPageY) => {
             measurementPending = false;
-            if (!mountedRef.current) {
+            if (runFinished || !mountedRef.current) {
               return;
             }
 
             const now = Date.now();
-            sampleCount += 1;
-            minPageY = Math.min(minPageY, measuredPageY);
-            maxPageY = Math.max(maxPageY, measuredPageY);
-
-            const isPastWarmup = now - runStartedAt >= WARMUP_MS;
-            if (
-              isPastWarmup &&
-              previousPageY != null &&
-              previousSampleAt != null &&
-              Math.abs(measuredPageY - previousPageY) <= FREEZE_EPSILON_PX
-            ) {
-              if (stableRunStartedAt == null) {
-                stableRunStartedAt = previousSampleAt;
-              }
-
-              const freezeMs = now - stableRunStartedAt;
-              maxFreezeMs = Math.max(maxFreezeMs, freezeMs);
-              if (freezeMs >= FREEZE_THRESHOLD_MS && !freezeEpisodeActive) {
-                freezeEpisodeActive = true;
-                freezeEpisodes += 1;
-              }
-            } else {
-              stableRunStartedAt = null;
-              freezeEpisodeActive = false;
+            if (firstSampleAt == null || firstPageY == null) {
+              firstSampleAt = now;
+              firstPageY = measuredPageY;
             }
 
-            previousPageY = measuredPageY;
-            previousSampleAt = now;
+            sampleCount += 1;
+            lastSampleAt = now;
+            lastPageY = measuredPageY;
 
-            if (sampleCount >= SAMPLES_PER_RUN) {
+            const elapsedFromFirst = Math.max(0, now - firstSampleAt);
+            const expectedDelta =
+              (SWEEP_DISTANCE_PX * elapsedFromFirst) / SWEEP_DURATION_MS;
+            const observedDelta = measuredPageY - firstPageY;
+            const absError = Math.abs(observedDelta - expectedDelta);
+            errorSum += absError;
+            errorSamples += 1;
+            maxAbsError = Math.max(maxAbsError, absError);
+
+            if (now - runStartedAt >= SAMPLE_WINDOW_MS) {
               finishRun();
             }
           },
         );
       }, SAMPLE_INTERVAL_MS);
+
+      runTimeoutRef.current = setTimeout(finishRun, SAMPLE_WINDOW_MS);
     };
 
     startRun(0);
@@ -241,14 +242,15 @@ function PresentationGeometryExample(): React.Node {
     <View style={styles.container}>
       <Text style={styles.title}>Presentation geometry continuous sweep</Text>
       <Text style={styles.help}>
-        Three one-way native-driven sweeps. Each sweep lasts 10 seconds, while
-        measure() samples the same animated view for the first 8 seconds. There
-        are no loops, reversals, endpoint waits, React state updates, or marker
-        mutations during a run.
+        Protocol {PROTOCOL}: three one-way 15 second native-driven sweeps. Each
+        run samples for exactly 6 seconds and compares measured movement with
+        the movement expected from the animation clock. No loops, reversals,
+        endpoint waits, React state updates, or marker mutations occur during a
+        run.
       </Text>
 
       <Pressable onPress={startMatrix} style={styles.reportButton}>
-        <Text style={styles.reportButtonText}>START CONTINUOUS MATRIX</Text>
+        <Text style={styles.reportButtonText}>START CONTINUOUS V3</Text>
       </Pressable>
 
       <Animated.View
@@ -308,6 +310,6 @@ export default {
   title: 'Presentation Geometry',
   name: 'presentation-geometry',
   description:
-    'Runs continuous one-way native-driven sweeps to detect stale presentation geometry without loop or endpoint artifacts.',
+    'Runs time-bounded native-driven sweeps and compares measured presentation movement against the animation clock.',
   render: (): React.Node => <PresentationGeometryExample />,
 } as RNTesterModuleExample;

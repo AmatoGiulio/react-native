@@ -14,6 +14,8 @@
 #include <functional>
 #include <memory>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "AnimatedProps.h"
 #include "AnimatedPropsRegistry.h"
@@ -52,7 +54,10 @@ class AnimationBackend : public UIManagerAnimationBackend {
       std::shared_ptr<AnimationChoreographer> animationChoreographer,
       std::shared_ptr<UIManager> uiManager);
   void commitUpdates(SurfaceId surfaceId, SurfaceUpdates &surfaceUpdates);
-  void synchronouslyUpdateProps(const std::unordered_map<Tag, AnimatedProps> &updates);
+  void synchronouslyUpdateProps(
+      SurfaceId surfaceId,
+      const std::unordered_map<Tag, AnimatedProps> &updates,
+      const std::unordered_set<std::shared_ptr<const ShadowNodeFamily>> &families);
   void requestAsyncFlushForSurfaces(const std::set<SurfaceId> &surfaces);
   void clearRegistry(SurfaceId surfaceId) override;
   void clearRegistryOnSurfaceStop(SurfaceId surfaceId) override;

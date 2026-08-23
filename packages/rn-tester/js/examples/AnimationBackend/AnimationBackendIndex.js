@@ -13,6 +13,7 @@ import type {RNTesterModule} from '../../types/RNTesterTypes';
 import AllAnimatedPropsExample from './AllAnimatedPropsExample';
 import PlaygroundExample from './ChessboardExample';
 import PerformanceTestExample from './PerformanceTestExample';
+import PresentationGeometryExample from './PresentationGeometryExample';
 import SwipeableListExample from './SwipeableListExample';
 import * as ReactNativeFeatureFlags from 'react-native/src/private/featureflags/ReactNativeFeatureFlags';
 
@@ -29,6 +30,7 @@ export default {
   showIndividualExamples: true,
   examples: canUseBackend
     ? [
+        PresentationGeometryExample,
         AllAnimatedPropsExample,
         PlaygroundExample,
         SwipeableListExample,

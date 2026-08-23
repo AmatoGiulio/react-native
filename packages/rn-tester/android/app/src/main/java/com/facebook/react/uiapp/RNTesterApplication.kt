@@ -21,7 +21,9 @@ import com.facebook.react.ReactPackage
 import com.facebook.react.ViewManagerOnDemandReactPackage
 import com.facebook.react.bridge.NativeModule
 import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.common.ReleaseLevel
 import com.facebook.react.common.assets.ReactFontManager
+import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint
 import com.facebook.react.defaults.DefaultReactHost
 import com.facebook.react.module.model.ReactModuleInfo
 import com.facebook.react.module.model.ReactModuleInfoProvider
@@ -121,6 +123,12 @@ internal class RNTesterApplication : Application(), ReactApplication {
     ReactFontManager.getInstance().addCustomFont(this, "Rubik", R.font.rubik)
     ReactFontManager.getInstance().addCustomFont(this, "FiraCode", R.font.firacode)
     super.onCreate()
+
+    // Research branch only: the Shared Animation Backend is enabled by the
+    // OSS experimental release level. Keep this local to RNTester so the proof
+    // exercises C++ Native Animated's direct-update path without changing the
+    // global default release configuration.
+    DefaultNewArchitectureEntryPoint.releaseLevel = ReleaseLevel.EXPERIMENTAL
     loadReactNative(this)
   }
 }

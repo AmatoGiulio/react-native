@@ -12,6 +12,7 @@
 #include <react/featureflags/ReactNativeFeatureFlags.h>
 #include <react/renderer/animationbackend/AnimatedPropsSerializer.h>
 #include <react/renderer/graphics/Color.h>
+#include <react/renderer/uimanager/consistency/PresentationPropsRegistry.h>
 #include <chrono>
 #include <utility>
 
@@ -102,7 +103,8 @@ void AnimationBackend::applySurfaceUpdates(
     if (updates.hasLayoutUpdates) {
       commitUpdates(surfaceId, updates);
     } else {
-      synchronouslyUpdateProps(updates.propsMap);
+      synchronouslyUpdateProps(
+          surfaceId, updates.propsMap, updates.families);
     }
   }
 
@@ -212,13 +214,44 @@ void AnimationBackend::commitUpdates(
 }
 
 void AnimationBackend::synchronouslyUpdateProps(
-    const std::unordered_map<Tag, AnimatedProps>& updates) {
+    SurfaceId surfaceId,
+    const std::unordered_map<Tag, AnimatedProps>& updates,
+    const std::unordered_set<std::shared_ptr<const ShadowNodeFamily>>&
+        families) {
   for (auto& [tag, animatedProps] : updates) {
-    // TODO: We shouldn't repack it into dynamic, but for that a rewrite
-    // of synchronouslyUpdateViewOnUIThread is needed
     auto dyn = animationbackend::packAnimatedProps(animatedProps);
     if (auto uiManager = uiManager_.lock()) {
       uiManager->synchronouslyUpdateViewOnUIThread(tag, dyn);
+
+      auto familyIt = std::find_if(
+          families.begin(), families.end(), [tag](const auto& family) {
+            return family != nullptr && family->getTag() == tag;
+          });
+      if (familyIt == families.end()) {
+        continue;
+      }
+
+      // An empty direct update is how Native Animated restores defaults when a
+      // props node disconnects. Drop any presentation override for the tag so
+      // subsequent geometry reads fall back to the committed props.
+      if (dyn.empty()) {
+        PresentationPropsRegistry::remove(surfaceId, tag);
+        continue;
+      }
+
+      folly::dynamic geometryProps = folly::dynamic::object();
+      if (dyn.count("transform") != 0u) {
+        geometryProps["transform"] = dyn["transform"];
+      }
+      if (dyn.count("transformOrigin") != 0u) {
+        geometryProps["transformOrigin"] = dyn["transformOrigin"];
+      }
+      if (geometryProps.empty()) {
+        continue;
+      }
+
+      PresentationPropsRegistry::update(
+          surfaceId, tag, *familyIt, std::move(geometryProps));
     }
   }
 }
@@ -231,8 +264,6 @@ void AnimationBackend::requestAsyncFlushForSurfaces(
   std::weak_ptr<AnimatedPropsRegistry> weakAnimatedPropsRegistry =
       animatedPropsRegistry_;
   for (const auto& surfaceId : surfaces) {
-    // perform an empty commit on the js thread, to force the commit hook to
-    // push updated shadow nodes to react through RSNRU
     jsInvoker_->invokeAsync(
         [weakUIManager = uiManager_, surfaceId, weakAnimatedPropsRegistry]() {
           auto uiManager = weakUIManager.lock();
@@ -249,14 +280,6 @@ void AnimationBackend::requestAsyncFlushForSurfaces(
                           oldRootShadowNode.ShadowNode::clone({}));
                     },
                     {.source = ShadowTreeCommitSource::AnimationEndSync});
-                // To clear the registry, the updates neeed to be propagated to
-                // React with RSNRU. Without
-                // updateRuntimeShadowNodeReferencesOnCommitThread this won't
-                // happen if we do any commits on the main thread, since the
-                // runtimeShadowNodeReference_ is not propagated to nodes cloned
-                // outside of the JS thread. So when the flag is disabled we
-                // keep the updates in the registry and we will reapply them in
-                // a commit hook triggered by a rerender.
                 if (result == ShadowTree::CommitStatus::Succeeded &&
                     ReactNativeFeatureFlags::
                         updateRuntimeShadowNodeReferencesOnCommitThread()) {
@@ -272,10 +295,12 @@ void AnimationBackend::requestAsyncFlushForSurfaces(
 
 void AnimationBackend::clearRegistry(SurfaceId surfaceId) {
   animatedPropsRegistry_->clear(surfaceId);
+  PresentationPropsRegistry::clear(surfaceId);
 }
 
 void AnimationBackend::clearRegistryOnSurfaceStop(SurfaceId surfaceId) {
   animatedPropsRegistry_->clearOnSurfaceStop(surfaceId);
+  PresentationPropsRegistry::clear(surfaceId);
 }
 
 void AnimationBackend::registerJSInvoker(

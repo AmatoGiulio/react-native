@@ -120,7 +120,7 @@ except Exception:
 
 for node in root.iter('node'):
     text = node.attrib.get('text', '')
-    if 'START 3 x 800 MATRIX' not in text:
+    if 'START CONTINUOUS MATRIX' not in text:
         continue
     bounds = node.attrib.get('bounds', '')
     match = re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
@@ -139,7 +139,7 @@ PY
     sleep 1
   done
 
-  echo "Could not find START 3 x 800 MATRIX for $label." >&2
+  echo "Could not find START CONTINUOUS MATRIX for $label." >&2
   return 1
 }
 
@@ -245,7 +245,6 @@ run_variant() {
   echo "Checking out $ref"
   git switch --detach "$ref" >/dev/null
 
-  # Free emulator storage and ensure each side starts with a clean app install.
   adb uninstall "$APP_ID" >/dev/null 2>&1 || true
   adb shell pm trim-caches 1G >/dev/null 2>&1 || true
 
@@ -269,7 +268,7 @@ run_variant() {
     -n "$ACTIVITY" >/dev/null
 
   find_and_tap_matrix_button "$label"
-  echo "Matrix running; waiting for 3 x 800 result..."
+  echo "Matrix running; waiting for continuous sweep result..."
   wait_for_matrix_result "$label" "$log_file" >/dev/null
 
   if [[ -n "$LOGCAT_PID" ]] && kill -0 "$LOGCAT_PID" >/dev/null 2>&1; then

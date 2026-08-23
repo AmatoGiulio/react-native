@@ -124,9 +124,10 @@ internal class RNTesterApplication : Application(), ReactApplication {
     ReactFontManager.getInstance().addCustomFont(this, "FiraCode", R.font.firacode)
     super.onCreate()
 
-    // Control branch: enable the same experimental Shared Animation Backend
-    // as the patched proof. The only intended A/B difference is the C++
-    // presentation-geometry patch itself.
+    // Research branch only: the Shared Animation Backend is enabled by the
+    // OSS experimental release level. Keep this local to RNTester so the proof
+    // exercises C++ Native Animated's direct-update path without changing the
+    // global default release configuration.
     DefaultNewArchitectureEntryPoint.releaseLevel = ReleaseLevel.EXPERIMENTAL
     loadReactNative(this)
   }

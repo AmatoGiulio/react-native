@@ -20,6 +20,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import MaterialThemeColors from '../../utils/MaterialThemeColors';
 
 const PROTOCOL = 'PG_CONTINUOUS_V3';
 const SAMPLE_INTERVAL_MS = 50;
@@ -265,23 +266,25 @@ function PresentationGeometryExample(): React.Node {
 
 const styles = StyleSheet.create({
   container: {
+    backgroundColor: MaterialThemeColors.surface,
     flex: 1,
     padding: 24,
   },
   title: {
-    color: 'white',
+    color: MaterialThemeColors.onSurface,
     fontSize: 20,
     fontWeight: '600',
     marginBottom: 8,
   },
   help: {
-    color: '#d1d5db',
+    color: MaterialThemeColors.onSurfaceVariant,
     maxWidth: 520,
     marginBottom: 16,
   },
   reportButton: {
     alignSelf: 'flex-start',
-    borderColor: '#6b7280',
+    backgroundColor: MaterialThemeColors.surfaceContainer,
+    borderColor: MaterialThemeColors.outline,
     borderRadius: 8,
     borderWidth: 1,
     marginBottom: 40,
@@ -289,19 +292,19 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   reportButtonText: {
-    color: 'white',
+    color: MaterialThemeColors.primary,
     fontSize: 12,
     fontWeight: '600',
   },
   button: {
     alignSelf: 'flex-start',
-    backgroundColor: '#2563eb',
+    backgroundColor: MaterialThemeColors.primary,
     borderRadius: 12,
     paddingHorizontal: 20,
     paddingVertical: 16,
   },
   buttonText: {
-    color: 'white',
+    color: MaterialThemeColors.onPrimary,
     fontWeight: '700',
   },
 });

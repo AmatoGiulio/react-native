@@ -156,6 +156,9 @@ dependencies {
   // Consume Hermes as built from source.
   implementation(project(":packages:react-native:ReactAndroid:hermes-engine"))
 
+  // Material 3 theme attributes + DynamicColors for device / wallpaper colors.
+  implementation("com.google.android.material:material:1.14.0")
+
   testImplementation(libs.junit)
   implementation(libs.androidx.profileinstaller)
 }

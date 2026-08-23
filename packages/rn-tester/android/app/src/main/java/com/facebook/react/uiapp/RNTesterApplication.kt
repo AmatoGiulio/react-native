@@ -32,6 +32,7 @@ import com.facebook.react.uiapp.component.MyNativeViewManager
 import com.facebook.react.uiapp.component.ReportFullyDrawnViewManager
 import com.facebook.react.uimanager.ReactShadowNode
 import com.facebook.react.uimanager.ViewManager
+import com.google.android.material.color.DynamicColors
 
 internal class RNTesterApplication : Application(), ReactApplication {
   override val reactHost: ReactHost by
@@ -123,6 +124,11 @@ internal class RNTesterApplication : Application(), ReactApplication {
     ReactFontManager.getInstance().addCustomFont(this, "Rubik", R.font.rubik)
     ReactFontManager.getInstance().addCustomFont(this, "FiraCode", R.font.firacode)
     super.onCreate()
+
+    // Resolve Material color roles from the device dynamic palette where the
+    // platform supports it. JS consumes the resulting theme attrs through
+    // PlatformColor instead of owning a duplicate palette.
+    DynamicColors.applyToActivitiesIfAvailable(this)
 
     // Research branch only: the Shared Animation Backend is enabled by the
     // OSS experimental release level. Keep this local to RNTester so the proof

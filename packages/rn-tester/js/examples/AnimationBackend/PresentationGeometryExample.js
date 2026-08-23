@@ -11,16 +11,26 @@
 import type {RNTesterModuleExample} from '../../types/RNTesterTypes';
 
 import * as React from 'react';
-import {Animated, Pressable, StyleSheet, Text, View} from 'react-native';
+import {
+  Alert,
+  Animated,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 function PresentationGeometryExample(): React.Node {
   const translateY = React.useRef(new Animated.Value(0)).current;
+  const measuredMarkerY = React.useRef(new Animated.Value(0)).current;
+  const rootRef = React.useRef<React.ElementRef<typeof View> | null>(null);
   const measuredViewRef = React.useRef<React.ElementRef<typeof View> | null>(
     null,
   );
-  const [pageY, setPageY] = React.useState<?number>(null);
-  const [pressInCount, setPressInCount] = React.useState(0);
-  const [pressCount, setPressCount] = React.useState(0);
+  const minPageYRef = React.useRef<number>(Number.POSITIVE_INFINITY);
+  const maxPageYRef = React.useRef<number>(Number.NEGATIVE_INFINITY);
+  const pressInCountRef = React.useRef(0);
+  const pressCountRef = React.useRef(0);
 
   React.useEffect(() => {
     const animation = Animated.loop(
@@ -43,35 +53,74 @@ function PresentationGeometryExample(): React.Node {
 
   React.useEffect(() => {
     const interval = setInterval(() => {
-      measuredViewRef.current?.measure(
-        (_x, _y, _width, _height, _pageX, measuredPageY) => {
-          setPageY(measuredPageY);
+      rootRef.current?.measure(
+        (_rootX, _rootY, _rootWidth, _rootHeight, _rootPageX, rootPageY) => {
+          measuredViewRef.current?.measure(
+            (_x, _y, _width, _height, _pageX, measuredPageY) => {
+              minPageYRef.current = Math.min(
+                minPageYRef.current,
+                measuredPageY,
+              );
+              maxPageYRef.current = Math.max(
+                maxPageYRef.current,
+                measuredPageY,
+              );
+              measuredMarkerY.setValue(measuredPageY - rootPageY);
+              console.log(`[PG] measured pageY=${measuredPageY.toFixed(1)}`);
+            },
+          );
         },
       );
     }, 100);
     return () => clearInterval(interval);
+  }, [measuredMarkerY]);
+
+  const reportResults = React.useCallback(() => {
+    const minPageY = minPageYRef.current;
+    const maxPageY = maxPageYRef.current;
+    const hasMeasurements =
+      Number.isFinite(minPageY) && Number.isFinite(maxPageY);
+    const range = hasMeasurements ? maxPageY - minPageY : 0;
+
+    Alert.alert(
+      'Presentation geometry results',
+      `pageY min: ${hasMeasurements ? minPageY.toFixed(1) : '—'}\n` +
+        `pageY max: ${hasMeasurements ? maxPageY.toFixed(1) : '—'}\n` +
+        `pageY span: ${hasMeasurements ? range.toFixed(1) : '—'}\n` +
+        `onPressIn: ${pressInCountRef.current}\n` +
+        `onPress: ${pressCountRef.current}`,
+    );
   }, []);
 
   return (
-    <View style={styles.container}>
+    <View ref={rootRef} collapsable={false} style={styles.container}>
       <Text style={styles.title}>Presentation geometry proof</Text>
       <Text style={styles.help}>
-        The button is moved only by a native-driven transform. The measured
-        pageY should move with it, and presses should complete at every visual
-        position.
+        No React state is updated while this test runs. The red line shows the
+        current measure() result. Press the moving button around 20 times, then
+        tap REPORT RESULTS.
       </Text>
-      <View style={styles.readout}>
-        <Text style={styles.readoutText}>
-          measured pageY: {pageY == null ? '—' : pageY.toFixed(1)}
-        </Text>
-        <Text style={styles.readoutText}>onPressIn: {pressInCount}</Text>
-        <Text style={styles.readoutText}>onPress: {pressCount}</Text>
-      </View>
+
+      <Pressable onPress={reportResults} style={styles.reportButton}>
+        <Text style={styles.reportButtonText}>REPORT RESULTS</Text>
+      </Pressable>
+
+      <Animated.View
+        pointerEvents="none"
+        style={[styles.measureMarker, {transform: [{translateY: measuredMarkerY}]}]}
+      />
+
       <Animated.View style={{transform: [{translateY}]}}>
         <Pressable
-          onPressIn={() => setPressInCount(value => value + 1)}
-          onPress={() => setPressCount(value => value + 1)}
-          style={({pressed}) => [styles.button, pressed && styles.pressed]}>
+          onPressIn={() => {
+            pressInCountRef.current += 1;
+            console.log(`[PG] onPressIn=${pressInCountRef.current}`);
+          }}
+          onPress={() => {
+            pressCountRef.current += 1;
+            console.log(`[PG] onPress=${pressCountRef.current}`);
+          }}
+          style={styles.button}>
           <View ref={measuredViewRef} collapsable={false}>
             <Text style={styles.buttonText}>PRESS WHILE MOVING</Text>
           </View>
@@ -97,13 +146,28 @@ const styles = StyleSheet.create({
     maxWidth: 520,
     marginBottom: 16,
   },
-  readout: {
-    gap: 4,
+  reportButton: {
+    alignSelf: 'flex-start',
+    borderColor: '#6b7280',
+    borderRadius: 8,
+    borderWidth: 1,
     marginBottom: 40,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
-  readoutText: {
+  reportButtonText: {
     color: 'white',
-    fontVariant: ['tabular-nums'],
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  measureMarker: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    height: 2,
+    backgroundColor: '#ef4444',
+    zIndex: 20,
   },
   button: {
     alignSelf: 'flex-start',
@@ -111,9 +175,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 20,
     paddingVertical: 16,
-  },
-  pressed: {
-    opacity: 0.7,
   },
   buttonText: {
     color: 'white',
@@ -125,6 +186,6 @@ export default {
   title: 'Presentation Geometry',
   name: 'presentation-geometry',
   description:
-    'Tests geometry and Pressability while native-driven transforms bypass ShadowTree commits.',
+    'Tests geometry and Pressability while native-driven transforms bypass ShadowTree commits without introducing observation commits.',
   render: (): React.Node => <PresentationGeometryExample />,
 } as RNTesterModuleExample;
